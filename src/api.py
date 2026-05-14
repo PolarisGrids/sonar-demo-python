@@ -170,3 +170,4 @@ def cache_reading(meter_id, value):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+# AMI Meter API
