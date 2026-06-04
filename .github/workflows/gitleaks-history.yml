@@ -196,7 +196,7 @@ jobs:
           path: gitleaks-history.json
           retention-days: 30
 
-      - name: Open GitHub Issue if secrets found
+      - name: Open GitHub Issue with auto-assign if secrets found
         if: always()
         uses: actions/github-script@v7
         with:
@@ -209,7 +209,59 @@ jobs:
               return;
             }
 
-            // Check if issue already exists to avoid duplicates
+            // Collect unique authors from findings and resolve GitHub usernames
+            const authorEmails = [...new Set(findings.map(f => f.Email).filter(Boolean))];
+            const authorNames  = [...new Set(findings.map(f => f.Author).filter(Boolean))];
+            const assignees = [];
+
+            for (const email of authorEmails) {
+              try {
+                const res = await github.rest.search.users({ q: `${email} in:email type:user` });
+                if (res.data.items.length > 0) {
+                  assignees.push(res.data.items[0].login);
+                  console.log(`Resolved ${email} → @${res.data.items[0].login}`);
+                }
+              } catch (e) {
+                console.log(`Could not resolve email ${email}: ${e.message}`);
+              }
+            }
+
+            // Fallback: try matching by author name if email lookup failed
+            if (assignees.length === 0) {
+              for (const name of authorNames) {
+                try {
+                  const res = await github.rest.search.users({ q: `${name} in:name org:PolarisGrids type:user` });
+                  if (res.data.items.length > 0) {
+                    assignees.push(res.data.items[0].login);
+                    console.log(`Resolved name ${name} → @${res.data.items[0].login}`);
+                  }
+                } catch (e) {
+                  console.log(`Could not resolve name ${name}: ${e.message}`);
+                }
+              }
+            }
+
+            const uniqueAssignees = [...new Set(assignees)].slice(0, 10);
+            const assigneeText = uniqueAssignees.length > 0
+              ? uniqueAssignees.map(a => `@${a}`).join(', ')
+              : 'Could not auto-resolve — please assign manually';
+
+            const body = `## ${findings.length} Secret(s) Found in Git History\n\n` +
+                         `**Last scan:** ${new Date().toISOString().split('T')[0]}\n` +
+                         `**Auto-assigned to:** ${assigneeText}\n\n` +
+                         `| # | Rule | File | Line | Commit | Author | Date |\n` +
+                         `|---|---|---|---|---|---|---|\n` +
+                         findings.map((f, i) =>
+                           `| ${i+1} | ${f.RuleID} | ${f.File} | ${f.StartLine} | ${f.Commit?.substring(0,8)} | ${f.Author} | ${f.Date?.substring(0,10)} |`
+                         ).join('\n') +
+                         `\n\n## Remediation\n` +
+                         `1. Rotate ALL exposed credentials immediately\n` +
+                         `2. Run \`bfg --replace-text secrets.txt\` to purge from history\n` +
+                         `3. Force push cleaned history (coordinate with team)\n` +
+                         `4. Move secrets to AWS Secrets Manager or SSM\n\n` +
+                         `> This issue is auto-updated every Monday. It will be closed automatically once the history is clean.`;
+
+            // Check if issue already exists — update instead of creating duplicate
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -218,23 +270,21 @@ jobs:
             });
 
             if (issues.data.length > 0) {
-              console.log('Issue already exists — updating it');
+              console.log(`Updating existing issue #${issues.data[0].number}`);
               await github.rest.issues.update({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issues.data[0].number,
-                body: `## ${findings.length} Secret(s) Found in Git History\n\n` +
-                      `**Last scan:** ${new Date().toISOString().split('T')[0]}\n\n` +
-                      `| # | Rule | File | Line | Commit | Author |\n` +
-                      `|---|---|---|---|---|---|\n` +
-                      findings.map((f, i) =>
-                        `| ${i+1} | ${f.RuleID} | ${f.File} | ${f.StartLine} | ${f.Commit?.substring(0,8)} | ${f.Author} |`
-                      ).join('\n') +
-                      `\n\n## Remediation\n` +
-                      `1. Rotate all exposed credentials immediately\n` +
-                      `2. Run \`bfg --replace-text secrets.txt\` to purge from history\n` +
-                      `3. Force push cleaned history\n` +
-                      `4. Move secrets to AWS Secrets Manager`
+                body,
+                assignees: uniqueAssignees
+              });
+              // Add a comment to re-notify assignees
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                body: `🔄 **Weekly scan update — ${new Date().toISOString().split('T')[0]}**\n\n` +
+                      `${findings.length} secret(s) still found. ${uniqueAssignees.map(a => `@${a}`).join(' ')} — please action this.`
               });
               return;
             }
@@ -243,17 +293,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: `🔴 [Gitleaks History] ${findings.length} secret(s) found in git history`,
-              body: `## ${findings.length} Secret(s) Found in Git History\n\n` +
-                    `**Last scan:** ${new Date().toISOString().split('T')[0]}\n\n` +
-                    `| # | Rule | File | Line | Commit | Author |\n` +
-                    `|---|---|---|---|---|---|\n` +
-                    findings.map((f, i) =>
-                      `| ${i+1} | ${f.RuleID} | ${f.File} | ${f.StartLine} | ${f.Commit?.substring(0,8)} | ${f.Author} |`
-                    ).join('\n') +
-                    `\n\n## Remediation\n` +
-                    `1. Rotate all exposed credentials immediately\n` +
-                    `2. Run \`bfg --replace-text secrets.txt\` to purge from history\n` +
-                    `3. Force push cleaned history\n` +
-                    `4. Move secrets to AWS Secrets Manager`,
-              labels: ['security', 'gitleaks-history']
+              body,
+              labels: ['security', 'gitleaks-history'],
+              assignees: uniqueAssignees
             });
