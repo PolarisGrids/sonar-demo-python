@@ -199,6 +199,8 @@ jobs:
       - name: Open GitHub Issue with auto-assign if secrets found
         if: always()
         uses: actions/github-script@v7
+        env:
+          SECURITY_OWNER: ${{ secrets.SECURITY_OWNER }}
         with:
           script: |
             const fs = require('fs');
@@ -232,7 +234,13 @@ jobs:
               }
             }
 
-            const uniqueAssignees = [...new Set(assignees)].slice(0, 10);
+            // Fallback to security owner if original author left org or account deleted
+            const SECURITY_OWNER = process.env.SECURITY_OWNER || '';
+            let uniqueAssignees = [...new Set(assignees)].slice(0, 10);
+            if (uniqueAssignees.length === 0 && SECURITY_OWNER) {
+              uniqueAssignees = [SECURITY_OWNER];
+              console.log(`No assignees resolved — falling back to @${SECURITY_OWNER}`);
+            }
             const assigneeText = uniqueAssignees.length > 0
               ? uniqueAssignees.map(a => `@${a}`).join(', ')
               : 'Could not auto-resolve — please assign manually';
