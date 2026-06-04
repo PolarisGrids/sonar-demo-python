@@ -1,0 +1,78 @@
+name: Gitleaks - Secret Scanning
+
+on:
+  push:
+    branches: ["develop", "staging", "main"]
+  pull_request:
+    branches: ["develop", "staging", "main"]
+
+jobs:
+  gitleaks:
+    name: Scan for secrets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Gitleaks
+        run: |
+          ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_${ARCH}.tar.gz" \
+            | tar -xz -C /usr/local/bin
+
+      - name: Run Gitleaks
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "PR scan — checking only new commits in this PR"
+            gitleaks detect \
+              --source . \
+              --log-opts="origin/${{ github.base_ref }}...HEAD" \
+              --report-format json \
+              --report-path gitleaks-results.json \
+              --exit-code 1 \
+              --verbose
+          else
+            echo "Push to ${{ github.ref_name }} — full scan (detection only)"
+            gitleaks detect \
+              --source . \
+              --report-format json \
+              --report-path gitleaks-results.json \
+              --verbose || true
+          fi
+
+      - name: Show detected secrets
+        if: failure()
+        run: |
+          python3 << 'PYEOF'
+          import json, sys, os
+          path = "gitleaks-results.json"
+          if not os.path.exists(path):
+              sys.exit(0)
+          with open(path) as f:
+              findings = json.load(f)
+          if not findings:
+              sys.exit(0)
+          print("")
+          print("=" * 60)
+          print("  GITLEAKS - SECRETS DETECTED - PR IS BLOCKED")
+          print("=" * 60)
+          for i, f in enumerate(findings, 1):
+              secret = f.get("Secret", "")
+              masked = secret[:6] + "*" * max(0, len(secret) - 6)
+              print(f"\n  [{i}] Rule   : {f.get('RuleID', '')}")
+              print(f"      File   : {f.get('File', '')}")
+              print(f"      Line   : {f.get('StartLine', '')}")
+              print(f"      Commit : {f.get('Commit', '')[:10]}")
+              print(f"      Secret : {masked}")
+          print(f"\n  Total: {len(findings)} secret(s) found")
+          print("=" * 60)
+          PYEOF
+
+      - name: Upload findings as artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-results
+          path: gitleaks-results.json
