@@ -11,6 +11,8 @@ jobs:
   gitleaks-history:
     name: Scan full git history
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout full history
         uses: actions/checkout@v4
@@ -96,6 +98,95 @@ jobs:
           print(f"  {GRAY}4. Move all secrets to AWS Secrets Manager or SSM{RESET}")
           print()
           PYEOF
+
+      - name: Notify Teams on secrets found
+        if: always()
+        run: |
+          python3 << 'PYEOF'
+          import json, os, urllib.request, urllib.error
+
+          path = "gitleaks-history.json"
+          if not os.path.exists(path):
+              print("No results file found — skipping Teams notification")
+              exit(0)
+
+          with open(path) as f:
+              findings = json.load(f)
+
+          webhook_url = os.environ.get("TEAMS_WEBHOOK_URL", "")
+          if not webhook_url:
+              print("No TEAMS_WEBHOOK_URL set — skipping notification")
+              exit(0)
+
+          repo     = os.environ.get("GITHUB_REPOSITORY", "")
+          run_id   = os.environ.get("GITHUB_RUN_ID", "")
+          server   = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+          run_url  = f"{server}/{repo}/actions/runs/{run_id}"
+          date     = os.environ.get("GITHUB_RUN_STARTED_AT", "")[:10]
+
+          if not findings:
+              payload = {
+                  "type": "message",
+                  "attachments": [{
+                      "contentType": "application/vnd.microsoft.card.adaptive",
+                      "content": {
+                          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                          "type": "AdaptiveCard",
+                          "version": "1.4",
+                          "body": [
+                              {"type": "TextBlock", "text": "POLARIS GRIDS — SECRETS DETECTION", "weight": "Bolder", "size": "Medium", "color": "Accent"},
+                              {"type": "TextBlock", "text": "✅  No secrets found in git history. Repository is clean.", "color": "Good", "wrap": True},
+                              {"type": "FactSet", "facts": [
+                                  {"title": "Repository", "value": repo},
+                                  {"title": "Scan Date", "value": date}
+                              ]}
+                          ],
+                          "actions": [{"type": "Action.OpenUrl", "title": "View Run", "url": run_url}]
+                      }
+                  }]
+              }
+          else:
+              top5 = findings[:5]
+              facts = [{"title": f"#{i+1} {f.get('RuleID','')}", "value": f"{f.get('File','')} · line {f.get('StartLine','')} · commit {f.get('Commit','')[:8]} · {f.get('Author','')}"}
+                       for i, f in enumerate(top5)]
+              if len(findings) > 5:
+                  facts.append({"title": "...", "value": f"and {len(findings) - 5} more. See GitHub Issue for full list."})
+
+              payload = {
+                  "type": "message",
+                  "attachments": [{
+                      "contentType": "application/vnd.microsoft.card.adaptive",
+                      "content": {
+                          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                          "type": "AdaptiveCard",
+                          "version": "1.4",
+                          "body": [
+                              {"type": "TextBlock", "text": "POLARIS GRIDS — SECRETS DETECTION", "weight": "Bolder", "size": "Medium", "color": "Attention"},
+                              {"type": "TextBlock", "text": f"🔴  {len(findings)} secret(s) found in git history of **{repo}**", "color": "Attention", "weight": "Bolder", "wrap": True},
+                              {"type": "TextBlock", "text": "Findings", "weight": "Bolder", "spacing": "Medium"},
+                              {"type": "FactSet", "facts": facts},
+                              {"type": "TextBlock", "text": "⚠️ Rotate exposed credentials immediately and purge from git history using BFG Repo Cleaner.", "wrap": True, "color": "Warning", "spacing": "Medium"}
+                          ],
+                          "actions": [
+                              {"type": "Action.OpenUrl", "title": "View GitHub Issue", "url": f"{server}/{repo}/issues"},
+                              {"type": "Action.OpenUrl", "title": "View Actions Run", "url": run_url}
+                          ]
+                      }
+                  }]
+              }
+
+          data = json.dumps(payload).encode("utf-8")
+          req  = urllib.request.Request(webhook_url, data=data, headers={"Content-Type": "application/json"})
+          try:
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                  print(f"Teams notification sent — status {resp.status}")
+          except urllib.error.HTTPError as e:
+              print(f"Teams notification failed: {e.code} {e.reason}")
+          except Exception as e:
+              print(f"Teams notification error: {e}")
+          PYEOF
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
 
       - name: Upload full history report
         if: always()
