@@ -254,12 +254,30 @@ jobs:
                          findings.map((f, i) =>
                            `| ${i+1} | ${f.RuleID} | ${f.File} | ${f.StartLine} | ${f.Commit?.substring(0,8)} | ${f.Author} | ${f.Date?.substring(0,10)} |`
                          ).join('\n') +
-                         `\n\n## Remediation\n` +
-                         `1. Rotate ALL exposed credentials immediately\n` +
-                         `2. Run \`bfg --replace-text secrets.txt\` to purge from history\n` +
-                         `3. Force push cleaned history (coordinate with team)\n` +
-                         `4. Move secrets to AWS Secrets Manager or SSM\n\n` +
-                         `> This issue is auto-updated every Monday. It will be closed automatically once the history is clean.`;
+                         `\n\n## Remediation Steps\n` +
+                         `1. **Rotate credentials immediately** — assume the secret is already compromised\n` +
+                         `2. **Purge from git history** — run BFG Repo Cleaner:\n` +
+                         `   \`\`\`bash\n` +
+                         `   echo "YOUR_SECRET_VALUE" > secrets.txt\n` +
+                         `   bfg --replace-text secrets.txt\n` +
+                         `   git reflog expire --expire=now --all && git gc --prune=now --aggressive\n` +
+                         `   git push --force\n` +
+                         `   \`\`\`\n` +
+                         `3. **Force push cleaned history** — coordinate with the team before doing this\n` +
+                         `4. **Move secret to AWS Secrets Manager** — never hardcode credentials again:\n` +
+                         `   \`\`\`bash\n` +
+                         `   aws secretsmanager create-secret \\\n` +
+                         `     --name "/gomati/stage/<service>/<secret-name>" \\\n` +
+                         `     --secret-string "YOUR_ACTUAL_SECRET_VALUE" \\\n` +
+                         `     --region ap-south-1\n` +
+                         `   \`\`\`\n` +
+                         `   Then reference it in your code:\n` +
+                         `   \`\`\`python\n` +
+                         `   import boto3\n` +
+                         `   client = boto3.client("secretsmanager", region_name="ap-south-1")\n` +
+                         `   secret = client.get_secret_value(SecretId="/gomati/stage/<service>/<secret-name>")\n` +
+                         `   \`\`\`\n\n` +
+                         `> ⚠️ This issue is auto-updated every Monday. A comment will be added each week until the history is clean.`;
 
             // Check if issue already exists — update instead of creating duplicate
             const issues = await github.rest.issues.listForRepo({
@@ -284,7 +302,11 @@ jobs:
                 repo: context.repo.repo,
                 issue_number: issues.data[0].number,
                 body: `🔄 **Weekly scan update — ${new Date().toISOString().split('T')[0]}**\n\n` +
-                      `${findings.length} secret(s) still found. ${uniqueAssignees.map(a => `@${a}`).join(' ')} — please action this.`
+                      `${findings.length} secret(s) still found in git history.\n\n` +
+                      `${uniqueAssignees.map(a => `@${a}`).join(' ')} — this is a reminder to:\n` +
+                      `1. Rotate the exposed credential\n` +
+                      `2. Purge it from git history using BFG\n` +
+                      `3. Move it to AWS Secrets Manager (\`/gomati/stage/<service>/<name>\`)`
               });
               return;
             }
