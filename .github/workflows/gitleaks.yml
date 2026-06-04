@@ -69,8 +69,7 @@ jobs:
           W = 62
           print()
           print(f"{BG_NAVY}{WHITE}{BOLD}{'':^{W}}{RESET}")
-          print(f"{BG_NAVY}{WHITE}{BOLD}{'POLARIS GRIDS — SECURITY SCAN':^{W}}{RESET}")
-          print(f"{BG_NAVY}{ORANGE}{BOLD}{'Pioneering India\'s Energy Revolution':^{W}}{RESET}")
+          print(f"{BG_NAVY}{WHITE}{BOLD}{'POLARIS GRIDS — SECRETS DETECTION':^{W}}{RESET}")
           print(f"{BG_NAVY}{WHITE}{BOLD}{'':^{W}}{RESET}")
           print()
           print(f"{RED}{BOLD}  ✖  SECRET LEAK DETECTED — PULL REQUEST BLOCKED{RESET}")
@@ -100,9 +99,6 @@ jobs:
           print(f"  {GRAY}2. Rotate the exposed credential immediately{RESET}")
           print(f"  {GRAY}3. Store secrets in AWS Secrets Manager or SSM{RESET}")
           print(f"  {GRAY}4. Push a clean commit to re-trigger this check{RESET}")
-          print()
-          print(f"{BG_NAVY}{WHITE}{BOLD}{'Polaris DevSecOps | soc@polarisgrids.com':^{W}}{RESET}")
-          print(f"{BG_NAVY}{WHITE}{BOLD}{'':^{W}}{RESET}")
           print()
           PYEOF
 
