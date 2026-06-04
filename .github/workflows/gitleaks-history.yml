@@ -199,6 +199,8 @@ jobs:
       - name: Open GitHub Issue with auto-assign if secrets found
         if: always()
         uses: actions/github-script@v7
+        env:
+          SECURITY_OWNER: ${{ secrets.SECURITY_OWNER }}
         with:
           script: |
             const fs = require('fs');
@@ -209,39 +211,36 @@ jobs:
               return;
             }
 
-            // Collect unique authors from findings and resolve GitHub usernames
-            const authorEmails = [...new Set(findings.map(f => f.Email).filter(Boolean))];
-            const authorNames  = [...new Set(findings.map(f => f.Author).filter(Boolean))];
+            // Resolve GitHub username via commit SHA — works regardless of email privacy
+            const commitSHAs = [...new Set(findings.map(f => f.Commit).filter(Boolean))];
             const assignees = [];
 
-            for (const email of authorEmails) {
+            for (const sha of commitSHAs) {
               try {
-                const res = await github.rest.search.users({ q: `${email} in:email type:user` });
-                if (res.data.items.length > 0) {
-                  assignees.push(res.data.items[0].login);
-                  console.log(`Resolved ${email} → @${res.data.items[0].login}`);
+                const res = await github.rest.repos.getCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: sha
+                });
+                const login = res.data.author?.login;
+                if (login) {
+                  assignees.push(login);
+                  console.log(`Resolved commit ${sha.substring(0,8)} → @${login}`);
+                } else {
+                  console.log(`Commit ${sha.substring(0,8)} has no linked GitHub account`);
                 }
               } catch (e) {
-                console.log(`Could not resolve email ${email}: ${e.message}`);
+                console.log(`Could not resolve commit ${sha.substring(0,8)}: ${e.message}`);
               }
             }
 
-            // Fallback: try matching by author name if email lookup failed
-            if (assignees.length === 0) {
-              for (const name of authorNames) {
-                try {
-                  const res = await github.rest.search.users({ q: `${name} in:name org:PolarisGrids type:user` });
-                  if (res.data.items.length > 0) {
-                    assignees.push(res.data.items[0].login);
-                    console.log(`Resolved name ${name} → @${res.data.items[0].login}`);
-                  }
-                } catch (e) {
-                  console.log(`Could not resolve name ${name}: ${e.message}`);
-                }
-              }
+            // Fallback to security owner if original author left org or account deleted
+            const SECURITY_OWNER = process.env.SECURITY_OWNER || '';
+            let uniqueAssignees = [...new Set(assignees)].slice(0, 10);
+            if (uniqueAssignees.length === 0 && SECURITY_OWNER) {
+              uniqueAssignees = [SECURITY_OWNER];
+              console.log(`No assignees resolved — falling back to @${SECURITY_OWNER}`);
             }
-
-            const uniqueAssignees = [...new Set(assignees)].slice(0, 10);
             const assigneeText = uniqueAssignees.length > 0
               ? uniqueAssignees.map(a => `@${a}`).join(', ')
               : 'Could not auto-resolve — please assign manually';
