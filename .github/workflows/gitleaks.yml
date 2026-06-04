@@ -22,16 +22,39 @@ jobs:
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_${ARCH}.tar.gz" \
             | tar -xz -C /usr/local/bin
 
-      - name: Run Gitleaks
+      - name: Run Gitleaks (verbose — shows each leak in logs)
         run: |
           gitleaks detect \
             --source . \
-            --report-format sarif \
-            --report-path gitleaks-results.sarif \
-            --exit-code 1
+            --report-format json \
+            --report-path gitleaks-results.json \
+            --exit-code 1 \
+            --verbose || LEAK_EXIT=$?
 
-      - name: Upload SARIF to GitHub Security tab
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
+          if [ -f gitleaks-results.json ] && [ "$(cat gitleaks-results.json)" != "[]" ]; then
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "🔴 GITLEAKS — SECRETS DETECTED"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            cat gitleaks-results.json | python3 -c "
+import json, sys
+findings = json.load(sys.stdin)
+for i, f in enumerate(findings, 1):
+    print(f\"\n[{i}] Rule      : {f.get('RuleID','')}\")
+    print(f\"    File      : {f.get('File','')}\")
+    print(f\"    Line      : {f.get('StartLine','')}\")
+    print(f\"    Commit    : {f.get('Commit','')[:10]}\")
+    print(f\"    Secret    : {f.get('Secret','')[:6]}{'*' * max(0, len(f.get('Secret','')) - 6)}\")
+print(f\"\nTotal leaks found: {len(findings)}\")
+"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          fi
+
+          exit ${LEAK_EXIT:-0}
+
+      - name: Upload findings as artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
         with:
-          sarif_file: gitleaks-results.sarif
+          name: gitleaks-results
+          path: gitleaks-results.json
