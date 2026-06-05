@@ -253,29 +253,45 @@ jobs:
                          findings.map((f, i) =>
                            `| ${i+1} | ${f.RuleID} | ${f.File} | ${f.StartLine} | ${f.Commit?.substring(0,8)} | ${f.Author} | ${f.Date?.substring(0,10)} |`
                          ).join('\n') +
-                         `\n\n## Remediation Steps\n` +
-                         `1. **Rotate credentials immediately** — assume the secret is already compromised\n` +
-                         `2. **Purge from git history** — run BFG Repo Cleaner:\n` +
-                         `   \`\`\`bash\n` +
-                         `   echo "YOUR_SECRET_VALUE" > secrets.txt\n` +
-                         `   bfg --replace-text secrets.txt\n` +
-                         `   git reflog expire --expire=now --all && git gc --prune=now --aggressive\n` +
-                         `   git push --force\n` +
-                         `   \`\`\`\n` +
-                         `3. **Force push cleaned history** — coordinate with the team before doing this\n` +
-                         `4. **Move secret to AWS Secrets Manager** — never hardcode credentials again:\n` +
-                         `   \`\`\`bash\n` +
-                         `   aws secretsmanager create-secret \\\n` +
-                         `     --name "/gomati/stage/<service>/<secret-name>" \\\n` +
-                         `     --secret-string "YOUR_ACTUAL_SECRET_VALUE" \\\n` +
-                         `     --region ap-south-1\n` +
-                         `   \`\`\`\n` +
-                         `   Then reference it in your code:\n` +
-                         `   \`\`\`python\n` +
-                         `   import boto3\n` +
-                         `   client = boto3.client("secretsmanager", region_name="ap-south-1")\n` +
-                         `   secret = client.get_secret_value(SecretId="/gomati/stage/<service>/<secret-name>")\n` +
-                         `   \`\`\`\n\n` +
+                         `\n\n## Remediation Steps\n\n` +
+                         `### Step 1 — Rotate the credential immediately\n` +
+                         `Assume the secret is already compromised. Revoke or rotate it **before** doing anything else.\n` +
+                         `Once rotated, the old value can no longer be used for access — history cleanup is a second priority.\n\n` +
+                         `### Step 2 — Purge from git history\n` +
+                         `Use **git-filter-repo** (GitHub's officially recommended tool — requires v2.47+):\n\n` +
+                         `\`\`\`bash\n` +
+                         `# Install git-filter-repo\n` +
+                         `pip install git-filter-repo\n\n` +
+                         `# Fresh clone — git-filter-repo requires a clean clone, not an existing working copy\n` +
+                         `git clone https://github.com/PolarisGrids/YOUR-REPO.git repo-clean\n` +
+                         `cd repo-clean\n\n` +
+                         `# Create replacement file — format: OLD_VALUE==>REPLACEMENT\n` +
+                         `echo "YOUR_SECRET_VALUE==>***REMOVED***" > /tmp/secrets.txt\n\n` +
+                         `# Rewrite full history — replaces the secret in all commits across all branches\n` +
+                         `git-filter-repo --sensitive-data-removal --replace-text /tmp/secrets.txt\n\n` +
+                         `# Verify the secret is gone, then force-push ALL branches, tags, and refs\n` +
+                         `git push --force --mirror origin\n` +
+                         `\`\`\`\n\n` +
+                         `> ⚠️ **Side effects to manage after force push:**\n` +
+                         `> - All collaborators must **discard their existing clone and re-clone** — a \`git pull\` will reintroduce the secret\n` +
+                         `> - Open PRs based on old history will have broken diffs — merge or close them first\n` +
+                         `> - Contact [GitHub Support](https://support.github.com) to purge cached views and PR refs from GitHub's servers\n\n` +
+                         `### Step 3 — Move the secret to AWS Secrets Manager\n` +
+                         `Never hardcode credentials in source code again:\n` +
+                         `\`\`\`bash\n` +
+                         `aws secretsmanager create-secret \\\n` +
+                         `  --name "/gomati/stage/<service>/<secret-name>" \\\n` +
+                         `  --secret-string "YOUR_ACTUAL_SECRET_VALUE" \\\n` +
+                         `  --region ap-south-1\n` +
+                         `\`\`\`\n` +
+                         `Then reference it in your code:\n` +
+                         `\`\`\`python\n` +
+                         `import boto3\n` +
+                         `client = boto3.client("secretsmanager", region_name="ap-south-1")\n` +
+                         `secret = client.get_secret_value(SecretId="/gomati/stage/<service>/<secret-name>")\n` +
+                         `\`\`\`\n\n` +
+                         `---\n` +
+                         `📖 **Reference:** [Removing sensitive data from a repository — GitHub Docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)\n\n` +
                          `> ⚠️ This issue is auto-updated every Monday. A comment will be added each week until the history is clean.`;
 
             // Check if issue already exists — update instead of creating duplicate
@@ -303,9 +319,10 @@ jobs:
                 body: `🔄 **Weekly scan update — ${new Date().toISOString().split('T')[0]}**\n\n` +
                       `${findings.length} secret(s) still found in git history.\n\n` +
                       `${uniqueAssignees.map(a => `@${a}`).join(' ')} — this is a reminder to:\n` +
-                      `1. Rotate the exposed credential\n` +
-                      `2. Purge it from git history using BFG\n` +
-                      `3. Move it to AWS Secrets Manager (\`/gomati/stage/<service>/<name>\`)`
+                      `1. **Rotate** the exposed credential immediately\n` +
+                      `2. **Purge** from git history using \`git-filter-repo --sensitive-data-removal\`\n` +
+                      `3. **Move** the secret to AWS Secrets Manager (\`/gomati/stage/<service>/<name>\`)\n\n` +
+                      `📖 [GitHub guide: Removing sensitive data from a repository](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)`
               });
               return;
             }
