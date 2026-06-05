@@ -93,7 +93,7 @@ jobs:
           print()
           print(f"  {ORANGE}Required actions:{RESET}")
           print(f"  {GRAY}1. Rotate ALL exposed credentials immediately{RESET}")
-          print(f"  {GRAY}2. Use BFG Repo Cleaner to purge secrets from history{RESET}")
+          print(f"  {GRAY}2. Purge from git history: git-filter-repo --sensitive-data-removal{RESET}")
           print(f"  {GRAY}3. Force push cleaned history (coordinate with team){RESET}")
           print(f"  {GRAY}4. Move all secrets to AWS Secrets Manager or SSM{RESET}")
           print()
