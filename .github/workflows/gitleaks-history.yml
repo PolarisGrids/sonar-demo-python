@@ -207,7 +207,31 @@ jobs:
             if (!fs.existsSync('gitleaks-history.json')) return;
             const findings = JSON.parse(fs.readFileSync('gitleaks-history.json'));
             if (!findings || findings.length === 0) {
-              console.log('No secrets found — skipping issue creation');
+              console.log('No secrets found — checking for open issue to close');
+              const openIssues = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                labels: 'gitleaks-history'
+              });
+              if (openIssues.data.length > 0) {
+                const issue = openIssues.data[0];
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `✅ **History is clean — closing this issue.**\n\n` +
+                        `Scan completed on ${new Date().toISOString().split('T')[0]}: no secrets found in git history.\n\n` +
+                        `All previously detected secrets have been purged using \`git-filter-repo --sensitive-data-removal\`.`
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  state: 'closed'
+                });
+                console.log(`Closed issue #${issue.number} — history is clean`);
+              }
               return;
             }
 
