@@ -165,7 +165,7 @@ jobs:
                               {"type": "TextBlock", "text": f"🔴  {len(findings)} secret(s) found in git history of **{repo}**", "color": "Attention", "weight": "Bolder", "wrap": True},
                               {"type": "TextBlock", "text": "Findings", "weight": "Bolder", "spacing": "Medium"},
                               {"type": "FactSet", "facts": facts},
-                              {"type": "TextBlock", "text": "⚠️ Rotate exposed credentials immediately and purge from git history using BFG Repo Cleaner.", "wrap": True, "color": "Warning", "spacing": "Medium"}
+                              {"type": "TextBlock", "text": "⚠️ Rotate exposed credentials immediately and purge from git history using git-filter-repo --sensitive-data-removal.", "wrap": True, "color": "Warning", "spacing": "Medium"}
                           ],
                           "actions": [
                               {"type": "Action.OpenUrl", "title": "View GitHub Issue", "url": f"{server}/{repo}/issues"},
