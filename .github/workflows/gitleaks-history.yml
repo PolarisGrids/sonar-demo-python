@@ -11,6 +11,9 @@ jobs:
   gitleaks-history:
     name: Scan full git history
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -22,13 +25,14 @@ jobs:
       - name: Install Gitleaks
         run: |
           ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_${ARCH}.tar.gz" \
+          curl -sSfL --proto '=https' --tlsv1.2 "https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_${ARCH}.tar.gz" \
             | tar -xz -C /usr/local/bin
 
       - name: Scan full git history
         run: |
           gitleaks detect \
             --source . \
+            --log-opts="--all" \
             --report-format json \
             --report-path gitleaks-history.json \
             --verbose || true
@@ -196,6 +200,81 @@ jobs:
           name: gitleaks-history-report
           path: gitleaks-history.json
           retention-days: 30
+
+      - name: Upload findings to DefectDojo
+        id: upload_defectdojo
+        if: always()
+        run: |
+          if [ -f gitleaks-history.json ] && [ -s gitleaks-history.json ]; then
+            RESPONSE=$(curl -sS --proto '=https' --tlsv1.2 \
+              -w "\nHTTP_STATUS:%{http_code}" \
+              -X POST \
+              -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
+              -F "scan_type=Gitleaks Scan" \
+              -F "file=@gitleaks-history.json" \
+              -F "product_name=${{ github.repository }}" \
+              -F "product_type_name=Source Code Security" \
+              -F "engagement_name=Gitleaks History" \
+              -F "auto_create_context=true" \
+              -F "close_old_findings=true" \
+              "${{ secrets.DEFECTDOJO_URL }}/api/v2/reimport-scan/")
+            HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d: -f2)
+            BODY=$(echo "$RESPONSE" | grep -v "HTTP_STATUS:")
+            echo "DefectDojo response [$HTTP_STATUS]: $BODY"
+            if [ "$HTTP_STATUS" != "201" ] && [ "$HTTP_STATUS" != "200" ]; then
+              echo "Upload failed with status $HTTP_STATUS"
+              exit 1
+            fi
+            TEST_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('test_id',''))" 2>/dev/null || echo "")
+            echo "test_id=$TEST_ID" >> "$GITHUB_OUTPUT"
+          else
+            echo "No findings file — skipping DefectDojo upload"
+          fi
+
+      - name: Populate DefectDojo finding details
+        if: always()
+        env:
+          TEST_ID: ${{ steps.upload_defectdojo.outputs.test_id }}
+          DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json, urllib.request, datetime
+
+          test_id = os.environ.get("TEST_ID", "").strip()
+          if not test_id:
+              print("No test_id — skipping finding population")
+              exit(0)
+
+          token   = os.environ["DEFECTDOJO_TOKEN"]
+          base    = os.environ["DEFECTDOJO_URL"].rstrip("/")
+          service = os.environ.get("GITHUB_REPOSITORY", "").split("/")[-1]
+          planned = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+          headers = {"Authorization": f"Token {token}", "Content-Type": "application/json"}
+
+          req = urllib.request.Request(f"{base}/api/v2/findings/?test={test_id}&limit=100", headers=headers)
+          with urllib.request.urlopen(req) as r:
+              findings = json.loads(r.read())["results"]
+
+          if not findings:
+              print(f"No findings in test {test_id} — nothing to populate")
+              exit(0)
+
+          print(f"Populating {len(findings)} finding(s) — service={service}, remediation_date={planned}")
+          for f in findings:
+              payload = json.dumps({
+                  "service": service,
+                  "planned_remediation_date": planned,
+                  "planned_remediation_version": "TBD",
+                  "reviewers": [1],
+              }).encode()
+              req = urllib.request.Request(
+                  f"{base}/api/v2/findings/{f['id']}/",
+                  data=payload, headers=headers, method="PATCH"
+              )
+              with urllib.request.urlopen(req) as r:
+                  print(f"  Finding {f['id']} ({f['severity']}) — {f['title'][:60]} ✓")
+          PYEOF
 
       - name: Open GitHub Issue with auto-assign if secrets found
         if: always()
