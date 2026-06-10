@@ -2,14 +2,16 @@ name: Gitleaks - Secret Scanning
 
 on:
   push:
-    branches: ["develop", "staging", "main"]
+    branches: ["**"]
   pull_request:
-    branches: ["develop", "staging", "main"]
+    branches: ["**"]
 
 jobs:
   gitleaks:
     name: Scan for secrets
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,7 +21,7 @@ jobs:
       - name: Install Gitleaks
         run: |
           ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_${ARCH}.tar.gz" \
+          curl -sSfL --proto '=https' --tlsv1.2 "https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_${ARCH}.tar.gz" \
             | tar -xz -C /usr/local/bin
 
       - name: Run Gitleaks
@@ -34,9 +36,17 @@ jobs:
               --exit-code 1 \
               --verbose
           else
-            echo "Push to ${{ github.ref_name }} — full scan (detection only)"
+            BEFORE="${{ github.event.before }}"
+            if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              echo "Push to new branch ${{ github.ref_name }} — scanning tip commit only"
+              LOG_OPTS="HEAD~1..HEAD"
+            else
+              echo "Push to ${{ github.ref_name }} — scanning new commits only ($BEFORE..HEAD)"
+              LOG_OPTS="$BEFORE..HEAD"
+            fi
             gitleaks detect \
               --source . \
+              --log-opts="$LOG_OPTS" \
               --report-format json \
               --report-path gitleaks-results.json \
               --verbose || true
@@ -108,3 +118,4 @@ jobs:
         with:
           name: gitleaks-results
           path: gitleaks-results.json
+
