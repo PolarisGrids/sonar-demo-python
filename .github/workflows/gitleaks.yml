@@ -2,14 +2,16 @@ name: Gitleaks - Secret Scanning
 
 on:
   push:
-    branches: ["develop", "staging", "main"]
+    branches: ["**"]
   pull_request:
-    branches: ["develop", "staging", "main"]
+    branches: ["**"]
 
 jobs:
   gitleaks:
     name: Scan for secrets
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,38 +21,96 @@ jobs:
       - name: Install Gitleaks
         run: |
           ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_${ARCH}.tar.gz" \
+          curl -sSfL --proto '=https' --tlsv1.2 "https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_${ARCH}.tar.gz" \
             | tar -xz -C /usr/local/bin
 
-      - name: Run Gitleaks (verbose — shows each leak in logs)
+      - name: Run Gitleaks
         run: |
-          gitleaks detect \
-            --source . \
-            --report-format json \
-            --report-path gitleaks-results.json \
-            --exit-code 1 \
-            --verbose || LEAK_EXIT=$?
-
-          if [ -f gitleaks-results.json ] && [ "$(cat gitleaks-results.json)" != "[]" ]; then
-            echo ""
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "🔴 GITLEAKS — SECRETS DETECTED"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            cat gitleaks-results.json | python3 -c "
-import json, sys
-findings = json.load(sys.stdin)
-for i, f in enumerate(findings, 1):
-    print(f\"\n[{i}] Rule      : {f.get('RuleID','')}\")
-    print(f\"    File      : {f.get('File','')}\")
-    print(f\"    Line      : {f.get('StartLine','')}\")
-    print(f\"    Commit    : {f.get('Commit','')[:10]}\")
-    print(f\"    Secret    : {f.get('Secret','')[:6]}{'*' * max(0, len(f.get('Secret','')) - 6)}\")
-print(f\"\nTotal leaks found: {len(findings)}\")
-"
-            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "PR scan — checking only new commits in this PR"
+            gitleaks detect \
+              --source . \
+              --log-opts="origin/${{ github.base_ref }}...HEAD" \
+              --report-format json \
+              --report-path gitleaks-results.json \
+              --exit-code 1 \
+              --verbose
+          else
+            BEFORE="${{ github.event.before }}"
+            if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              echo "Push to new branch ${{ github.ref_name }} — scanning tip commit only"
+              LOG_OPTS="HEAD~1..HEAD"
+            else
+              echo "Push to ${{ github.ref_name }} — scanning new commits only ($BEFORE..HEAD)"
+              LOG_OPTS="$BEFORE..HEAD"
+            fi
+            gitleaks detect \
+              --source . \
+              --log-opts="$LOG_OPTS" \
+              --report-format json \
+              --report-path gitleaks-results.json \
+              --verbose || true
           fi
 
-          exit ${LEAK_EXIT:-0}
+      - name: Show detected secrets
+        if: failure()
+        run: |
+          python3 << 'PYEOF'
+          import json, sys, os
+
+          # ANSI color codes
+          RESET   = "\033[0m"
+          BOLD    = "\033[1m"
+          NAVY    = "\033[38;5;25m"    # Polaris navy blue
+          ORANGE  = "\033[38;5;208m"   # Polaris orange accent
+          RED     = "\033[38;5;196m"   # Critical red
+          WHITE   = "\033[97m"
+          GRAY    = "\033[38;5;245m"
+          BG_NAVY = "\033[48;5;17m"    # Navy background
+
+          path = "gitleaks-results.json"
+          if not os.path.exists(path):
+              sys.exit(0)
+          with open(path) as f:
+              findings = json.load(f)
+          if not findings:
+              sys.exit(0)
+
+          W = 62
+          print()
+          print(f"{BG_NAVY}{WHITE}{BOLD}{'':^{W}}{RESET}")
+          print(f"{BG_NAVY}{WHITE}{BOLD}{'POLARIS GRIDS — SECRETS DETECTION':^{W}}{RESET}")
+          print(f"{BG_NAVY}{WHITE}{BOLD}{'':^{W}}{RESET}")
+          print()
+          print(f"{RED}{BOLD}  ✖  SECRET LEAK DETECTED — PULL REQUEST BLOCKED{RESET}")
+          print(f"{NAVY}{'─' * W}{RESET}")
+          print()
+
+          for i, finding in enumerate(findings, 1):
+              secret = finding.get("Secret", "")
+              masked = secret[:4] + "●" * min(12, max(4, len(secret) - 4)) + "  [REDACTED]"
+              rule   = finding.get("RuleID", "unknown")
+              file_  = finding.get("File", "")
+              line   = finding.get("StartLine", "")
+              commit = finding.get("Commit", "")[:10]
+
+              print(f"  {ORANGE}{BOLD}Finding #{i}{RESET}")
+              print(f"  {GRAY}{'Rule    '}{RESET}  {WHITE}{rule}{RESET}")
+              print(f"  {GRAY}{'File    '}{RESET}  {WHITE}{file_}{RESET}  {GRAY}line {line}{RESET}")
+              print(f"  {GRAY}{'Commit  '}{RESET}  {WHITE}{commit}{RESET}")
+              print(f"  {GRAY}{'Secret  '}{RESET}  {RED}{masked}{RESET}")
+              print()
+
+          print(f"{NAVY}{'─' * W}{RESET}")
+          print(f"  {RED}{BOLD}{len(findings)} secret(s) found.  This PR cannot be merged.{RESET}")
+          print()
+          print(f"  {ORANGE}Remediation steps:{RESET}")
+          print(f"  {GRAY}1. Remove the secret from your code{RESET}")
+          print(f"  {GRAY}2. Rotate the exposed credential immediately{RESET}")
+          print(f"  {GRAY}3. Store secrets in AWS Secrets Manager or SSM{RESET}")
+          print(f"  {GRAY}4. Push a clean commit to re-trigger this check{RESET}")
+          print()
+          PYEOF
 
       - name: Upload findings as artifact
         if: failure()
@@ -58,3 +118,4 @@ print(f\"\nTotal leaks found: {len(findings)}\")
         with:
           name: gitleaks-results
           path: gitleaks-results.json
+
