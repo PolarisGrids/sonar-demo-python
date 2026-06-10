@@ -349,12 +349,21 @@ jobs:
               ? uniqueAssignees.map(a => `@${a}`).join(', ')
               : 'Could not auto-resolve — please assign manually';
 
+            const TOP_N = 50;
+            const shown = findings.slice(0, TOP_N);
+            const remaining = findings.length - shown.length;
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const truncationNote = remaining > 0
+              ? `\n> ⚠️ Showing ${TOP_N} of ${findings.length} findings. [Download full report from Actions artifact](${runUrl}) for the complete list.\n`
+              : '';
+
             const body = `## ${findings.length} Secret(s) Found in Git History\n\n` +
                          `**Last scan:** ${new Date().toISOString().split('T')[0]}\n` +
                          `**Auto-assigned to:** ${assigneeText}\n\n` +
+                         truncationNote +
                          `| # | Rule | File | Line | Commit | Author | Date |\n` +
                          `|---|---|---|---|---|---|---|\n` +
-                         findings.map((f, i) =>
+                         shown.map((f, i) =>
                            `| ${i+1} | ${f.RuleID} | ${f.File} | ${f.StartLine} | ${f.Commit?.substring(0,8)} | ${f.Author} | ${f.Date?.substring(0,10)} |`
                          ).join('\n') +
                          `\n\n## Remediation Steps\n\n` +
