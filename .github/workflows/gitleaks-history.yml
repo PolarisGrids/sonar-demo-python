@@ -1,0 +1,441 @@
+name: Gitleaks - Full History Scan
+
+on:
+  # Run every Monday at 8AM IST (2:30 AM UTC)
+  schedule:
+    - cron: "30 2 * * 1"
+  # Allow manual trigger anytime
+  workflow_dispatch:
+
+jobs:
+  gitleaks-history:
+    name: Scan full git history
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Gitleaks
+        run: |
+          ARCH=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')
+          curl -sSfL --proto '=https' --tlsv1.2 "https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_${ARCH}.tar.gz" \
+            | tar -xz -C /usr/local/bin
+
+      - name: Scan full git history
+        run: |
+          gitleaks detect \
+            --source . \
+            --log-opts="--all" \
+            --report-format json \
+            --report-path gitleaks-history.json \
+            --verbose || true
+
+      - name: Show history scan results
+        run: |
+          python3 << 'PYEOF'
+          import json, sys, os
+
+          RESET   = "\033[0m"
+          BOLD    = "\033[1m"
+          NAVY    = "\033[38;5;25m"
+          ORANGE  = "\033[38;5;208m"
+          RED     = "\033[38;5;196m"
+          WHITE   = "\033[97m"
+          GRAY    = "\033[38;5;245m"
+          BG_NAVY = "\033[48;5;17m"
+          GREEN   = "\033[38;5;40m"
+
+          path = "gitleaks-history.json"
+          if not os.path.exists(path):
+              sys.exit(0)
+          with open(path) as f:
+              findings = json.load(f)
+
+          W = 62
+          print()
+          print(f"{BG_NAVY}{WHITE}{BOLD}{'':^{W}}{RESET}")
+          print(f"{BG_NAVY}{WHITE}{BOLD}{'POLARIS GRIDS — SECRETS DETECTION':^{W}}{RESET}")
+          print(f"{BG_NAVY}{WHITE}{BOLD}{'Full Repository History Scan':^{W}}{RESET}")
+          print(f"{BG_NAVY}{WHITE}{BOLD}{'':^{W}}{RESET}")
+          print()
+
+          if not findings:
+              print(f"  {GREEN}{BOLD}✔  No secrets found in git history. Repository is clean.{RESET}")
+              print()
+              sys.exit(0)
+
+          print(f"{RED}{BOLD}  ✖  {len(findings)} SECRET(S) FOUND IN GIT HISTORY{RESET}")
+          print(f"{NAVY}{'─' * W}{RESET}")
+          print()
+
+          # Group by file for easier remediation
+          by_file = {}
+          for f in findings:
+              key = f.get("File", "unknown")
+              by_file.setdefault(key, []).append(f)
+
+          for i, (finding) in enumerate(findings, 1):
+              secret = finding.get("Secret", "")
+              masked = secret[:4] + "●" * min(12, max(4, len(secret) - 4)) + "  [REDACTED]"
+              print(f"  {ORANGE}{BOLD}Finding #{i}{RESET}")
+              print(f"  {GRAY}Rule    {RESET}  {WHITE}{finding.get('RuleID', '')}{RESET}")
+              print(f"  {GRAY}File    {RESET}  {WHITE}{finding.get('File', '')}{RESET}  {GRAY}line {finding.get('StartLine', '')}{RESET}")
+              print(f"  {GRAY}Commit  {RESET}  {WHITE}{finding.get('Commit', '')[:10]}{RESET}  {GRAY}{finding.get('Date', '')[:10]}{RESET}")
+              print(f"  {GRAY}Author  {RESET}  {WHITE}{finding.get('Author', '')}{RESET}")
+              print(f"  {GRAY}Secret  {RESET}  {RED}{masked}{RESET}")
+              print()
+
+          print(f"{NAVY}{'─' * W}{RESET}")
+          print(f"  {RED}{BOLD}{len(findings)} secret(s) found in git history.{RESET}")
+          print()
+          print(f"  {ORANGE}Required actions:{RESET}")
+          print(f"  {GRAY}1. Rotate ALL exposed credentials immediately{RESET}")
+          print(f"  {GRAY}2. Purge from git history: git-filter-repo --sensitive-data-removal{RESET}")
+          print(f"  {GRAY}3. Force push cleaned history (coordinate with team){RESET}")
+          print(f"  {GRAY}4. Move all secrets to AWS Secrets Manager or SSM{RESET}")
+          print()
+          PYEOF
+
+      - name: Notify Teams on secrets found
+        if: always()
+        run: |
+          python3 << 'PYEOF'
+          import json, os, urllib.request, urllib.error
+          from datetime import datetime, timezone
+
+          path = "gitleaks-history.json"
+          if not os.path.exists(path):
+              print("No results file found — skipping Teams notification")
+              exit(0)
+
+          with open(path) as f:
+              findings = json.load(f)
+
+          webhook_url = os.environ.get("TEAMS_WEBHOOK_URL", "")
+          if not webhook_url:
+              print("No TEAMS_WEBHOOK_URL set — skipping notification")
+              exit(0)
+
+          repo     = os.environ.get("GITHUB_REPOSITORY", "")
+          run_id   = os.environ.get("GITHUB_RUN_ID", "")
+          server   = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+          run_url  = f"{server}/{repo}/actions/runs/{run_id}"
+          date     = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+          if not findings:
+              payload = {
+                  "type": "message",
+                  "attachments": [{
+                      "contentType": "application/vnd.microsoft.card.adaptive",
+                      "content": {
+                          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                          "type": "AdaptiveCard",
+                          "version": "1.4",
+                          "body": [
+                              {"type": "TextBlock", "text": "POLARIS GRIDS — SECRETS DETECTION", "weight": "Bolder", "size": "Medium", "color": "Accent"},
+                              {"type": "TextBlock", "text": "✅  No secrets found in git history. Repository is clean.", "color": "Good", "wrap": True},
+                              {"type": "FactSet", "facts": [
+                                  {"title": "Repository", "value": repo},
+                                  {"title": "Scan Date", "value": date}
+                              ]}
+                          ],
+                          "actions": [{"type": "Action.OpenUrl", "title": "View Run", "url": run_url}]
+                      }
+                  }]
+              }
+          else:
+              top5 = findings[:5]
+              facts = [{"title": f"#{i+1} {f.get('RuleID','')}", "value": f"{f.get('File','')} · line {f.get('StartLine','')} · commit {f.get('Commit','')[:8]} · {f.get('Author','')}"}
+                       for i, f in enumerate(top5)]
+              if len(findings) > 5:
+                  facts.append({"title": "...", "value": f"and {len(findings) - 5} more. See GitHub Issue for full list."})
+
+              payload = {
+                  "type": "message",
+                  "attachments": [{
+                      "contentType": "application/vnd.microsoft.card.adaptive",
+                      "content": {
+                          "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                          "type": "AdaptiveCard",
+                          "version": "1.4",
+                          "body": [
+                              {"type": "TextBlock", "text": "POLARIS GRIDS — SECRETS DETECTION", "weight": "Bolder", "size": "Medium", "color": "Attention"},
+                              {"type": "TextBlock", "text": f"🔴  {len(findings)} secret(s) found in git history of **{repo}**", "color": "Attention", "weight": "Bolder", "wrap": True},
+                              {"type": "TextBlock", "text": "Findings", "weight": "Bolder", "spacing": "Medium"},
+                              {"type": "FactSet", "facts": facts},
+                              {"type": "TextBlock", "text": "⚠️ Rotate exposed credentials immediately and purge from git history using git-filter-repo --sensitive-data-removal.", "wrap": True, "color": "Warning", "spacing": "Medium"}
+                          ],
+                          "actions": [
+                              {"type": "Action.OpenUrl", "title": "View GitHub Issue", "url": f"{server}/{repo}/issues"},
+                              {"type": "Action.OpenUrl", "title": "View Actions Run", "url": run_url}
+                          ]
+                      }
+                  }]
+              }
+
+          data = json.dumps(payload).encode("utf-8")
+          req  = urllib.request.Request(webhook_url, data=data, headers={"Content-Type": "application/json"})
+          try:
+              with urllib.request.urlopen(req, timeout=10) as resp:
+                  print(f"Teams notification sent — status {resp.status}")
+          except urllib.error.HTTPError as e:
+              print(f"Teams notification failed: {e.code} {e.reason}")
+          except Exception as e:
+              print(f"Teams notification error: {e}")
+          PYEOF
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+
+      - name: Upload full history report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-history-report
+          path: gitleaks-history.json
+          retention-days: 30
+
+      - name: Upload findings to DefectDojo
+        id: upload_defectdojo
+        if: always()
+        run: |
+          if [ -f gitleaks-history.json ] && [ -s gitleaks-history.json ]; then
+            RESPONSE=$(curl -sS --proto '=https' --tlsv1.2 \
+              -w "\nHTTP_STATUS:%{http_code}" \
+              -X POST \
+              -H "Authorization: Token ${{ secrets.DEFECTDOJO_TOKEN }}" \
+              -F "scan_type=Gitleaks Scan" \
+              -F "file=@gitleaks-history.json" \
+              -F "product_name=${{ github.repository }}" \
+              -F "product_type_name=Source Code Security" \
+              -F "engagement_name=Gitleaks History" \
+              -F "auto_create_context=true" \
+              -F "close_old_findings=true" \
+              "${{ secrets.DEFECTDOJO_URL }}/api/v2/reimport-scan/")
+            HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP_STATUS:" | cut -d: -f2)
+            BODY=$(echo "$RESPONSE" | grep -v "HTTP_STATUS:")
+            echo "DefectDojo response [$HTTP_STATUS]: $BODY"
+            if [ "$HTTP_STATUS" != "201" ] && [ "$HTTP_STATUS" != "200" ]; then
+              echo "Upload failed with status $HTTP_STATUS"
+              exit 1
+            fi
+            TEST_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('test_id',''))" 2>/dev/null || echo "")
+            echo "test_id=$TEST_ID" >> "$GITHUB_OUTPUT"
+          else
+            echo "No findings file — skipping DefectDojo upload"
+          fi
+
+      - name: Populate DefectDojo finding details
+        if: always()
+        env:
+          TEST_ID: ${{ steps.upload_defectdojo.outputs.test_id }}
+          DEFECTDOJO_TOKEN: ${{ secrets.DEFECTDOJO_TOKEN }}
+          DEFECTDOJO_URL: ${{ secrets.DEFECTDOJO_URL }}
+        run: |
+          python3 << 'PYEOF'
+          import os, json, urllib.request, datetime
+
+          test_id = os.environ.get("TEST_ID", "").strip()
+          if not test_id:
+              print("No test_id — skipping finding population")
+              exit(0)
+
+          token   = os.environ["DEFECTDOJO_TOKEN"]
+          base    = os.environ["DEFECTDOJO_URL"].rstrip("/")
+          service = os.environ.get("GITHUB_REPOSITORY", "").split("/")[-1]
+          planned = (datetime.date.today() + datetime.timedelta(days=30)).isoformat()
+          headers = {"Authorization": f"Token {token}", "Content-Type": "application/json"}
+
+          req = urllib.request.Request(f"{base}/api/v2/findings/?test={test_id}&limit=100", headers=headers)
+          with urllib.request.urlopen(req) as r:
+              findings = json.loads(r.read())["results"]
+
+          if not findings:
+              print(f"No findings in test {test_id} — nothing to populate")
+              exit(0)
+
+          print(f"Populating {len(findings)} finding(s) — service={service}, remediation_date={planned}")
+          for f in findings:
+              payload = json.dumps({
+                  "service": service,
+                  "planned_remediation_date": planned,
+                  "planned_remediation_version": "TBD",
+                  "reviewers": [1],
+              }).encode()
+              req = urllib.request.Request(
+                  f"{base}/api/v2/findings/{f['id']}/",
+                  data=payload, headers=headers, method="PATCH"
+              )
+              with urllib.request.urlopen(req) as r:
+                  print(f"  Finding {f['id']} ({f['severity']}) — {f['title'][:60]} ✓")
+          PYEOF
+
+      - name: Open GitHub Issue with auto-assign if secrets found
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          SECURITY_OWNER: ${{ secrets.SECURITY_OWNER }}
+        with:
+          script: |
+            const fs = require('fs');
+            if (!fs.existsSync('gitleaks-history.json')) return;
+            const findings = JSON.parse(fs.readFileSync('gitleaks-history.json'));
+            if (!findings || findings.length === 0) {
+              console.log('No secrets found — checking for open issue to close');
+              const openIssues = await github.rest.issues.listForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                state: 'open',
+                labels: 'gitleaks-history'
+              });
+              if (openIssues.data.length > 0) {
+                const issue = openIssues.data[0];
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: `✅ **History is clean — closing this issue.**\n\n` +
+                        `Scan completed on ${new Date().toISOString().split('T')[0]}: no secrets found in git history.\n\n` +
+                        `All previously detected secrets have been purged using \`git-filter-repo --sensitive-data-removal\`.`
+                });
+                await github.rest.issues.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  state: 'closed'
+                });
+                console.log(`Closed issue #${issue.number} — history is clean`);
+              }
+              return;
+            }
+
+            // Resolve GitHub username via commit SHA — works regardless of email privacy
+            const commitSHAs = [...new Set(findings.map(f => f.Commit).filter(Boolean))];
+            const assignees = [];
+
+            for (const sha of commitSHAs) {
+              try {
+                const res = await github.rest.repos.getCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: sha
+                });
+                const login = res.data.author?.login;
+                if (login) {
+                  assignees.push(login);
+                  console.log(`Resolved commit ${sha.substring(0,8)} → @${login}`);
+                } else {
+                  console.log(`Commit ${sha.substring(0,8)} has no linked GitHub account`);
+                }
+              } catch (e) {
+                console.log(`Could not resolve commit ${sha.substring(0,8)}: ${e.message}`);
+              }
+            }
+
+            // Fallback to security owner if original author left org or account deleted
+            const SECURITY_OWNER = process.env.SECURITY_OWNER || '';
+            let uniqueAssignees = [...new Set(assignees)].slice(0, 10);
+            if (uniqueAssignees.length === 0 && SECURITY_OWNER) {
+              uniqueAssignees = [SECURITY_OWNER];
+              console.log(`No assignees resolved — falling back to @${SECURITY_OWNER}`);
+            }
+            const assigneeText = uniqueAssignees.length > 0
+              ? uniqueAssignees.map(a => `@${a}`).join(', ')
+              : 'Could not auto-resolve — please assign manually';
+
+            const body = `## ${findings.length} Secret(s) Found in Git History\n\n` +
+                         `**Last scan:** ${new Date().toISOString().split('T')[0]}\n` +
+                         `**Auto-assigned to:** ${assigneeText}\n\n` +
+                         `| # | Rule | File | Line | Commit | Author | Date |\n` +
+                         `|---|---|---|---|---|---|---|\n` +
+                         findings.map((f, i) =>
+                           `| ${i+1} | ${f.RuleID} | ${f.File} | ${f.StartLine} | ${f.Commit?.substring(0,8)} | ${f.Author} | ${f.Date?.substring(0,10)} |`
+                         ).join('\n') +
+                         `\n\n## Remediation Steps\n\n` +
+                         `### Step 1 — Rotate the credential immediately\n` +
+                         `Assume the secret is already compromised. Revoke or rotate it **before** doing anything else.\n` +
+                         `Once rotated, the old value can no longer be used for access — history cleanup is a second priority.\n\n` +
+                         `### Step 2 — Purge from git history\n` +
+                         `Use **git-filter-repo** (GitHub's officially recommended tool — requires v2.47+):\n\n` +
+                         `\`\`\`bash\n` +
+                         `# Install git-filter-repo\n` +
+                         `pip install git-filter-repo\n\n` +
+                         `# Fresh clone — git-filter-repo requires a clean clone, not an existing working copy\n` +
+                         `git clone https://github.com/PolarisGrids/YOUR-REPO.git repo-clean\n` +
+                         `cd repo-clean\n\n` +
+                         `# Create replacement file — format: OLD_VALUE==>REPLACEMENT\n` +
+                         `echo "YOUR_SECRET_VALUE==>***REMOVED***" > /tmp/secrets.txt\n\n` +
+                         `# Rewrite full history — replaces the secret in all commits across all branches\n` +
+                         `git-filter-repo --sensitive-data-removal --replace-text /tmp/secrets.txt\n\n` +
+                         `# Verify the secret is gone, then force-push ALL branches, tags, and refs\n` +
+                         `git push --force --mirror origin\n` +
+                         `\`\`\`\n\n` +
+                         `> ⚠️ **Side effects to manage after force push:**\n` +
+                         `> - All collaborators must **discard their existing clone and re-clone** — a \`git pull\` will reintroduce the secret\n` +
+                         `> - Open PRs based on old history will have broken diffs — merge or close them first\n` +
+                         `> - Contact [GitHub Support](https://support.github.com) to purge cached views and PR refs from GitHub's servers\n\n` +
+                         `### Step 3 — Move the secret to AWS Secrets Manager\n` +
+                         `Never hardcode credentials in source code again:\n` +
+                         `\`\`\`bash\n` +
+                         `aws secretsmanager create-secret \\\n` +
+                         `  --name "/gomati/stage/<service>/<secret-name>" \\\n` +
+                         `  --secret-string "YOUR_ACTUAL_SECRET_VALUE" \\\n` +
+                         `  --region ap-south-1\n` +
+                         `\`\`\`\n` +
+                         `Then reference it in your code:\n` +
+                         `\`\`\`python\n` +
+                         `import boto3\n` +
+                         `client = boto3.client("secretsmanager", region_name="ap-south-1")\n` +
+                         `secret = client.get_secret_value(SecretId="/gomati/stage/<service>/<secret-name>")\n` +
+                         `\`\`\`\n\n` +
+                         `---\n` +
+                         `📖 **Reference:** [Removing sensitive data from a repository — GitHub Docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)\n\n` +
+                         `> ⚠️ This issue is auto-updated every Monday. A comment will be added each week until the history is clean.`;
+
+            // Check if issue already exists — update instead of creating duplicate
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'gitleaks-history'
+            });
+
+            if (issues.data.length > 0) {
+              console.log(`Updating existing issue #${issues.data[0].number}`);
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                body,
+                assignees: uniqueAssignees
+              });
+              // Add a comment to re-notify assignees
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                body: `🔄 **Weekly scan update — ${new Date().toISOString().split('T')[0]}**\n\n` +
+                      `${findings.length} secret(s) still found in git history.\n\n` +
+                      `${uniqueAssignees.map(a => `@${a}`).join(' ')} — this is a reminder to:\n` +
+                      `1. **Rotate** the exposed credential immediately\n` +
+                      `2. **Purge** from git history using \`git-filter-repo --sensitive-data-removal\`\n` +
+                      `3. **Move** the secret to AWS Secrets Manager (\`/gomati/stage/<service>/<name>\`)\n\n` +
+                      `📖 [GitHub guide: Removing sensitive data from a repository](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)`
+              });
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🔴 [Gitleaks History] ${findings.length} secret(s) found in git history`,
+              body,
+              labels: ['security', 'gitleaks-history'],
+              assignees: uniqueAssignees
+            });
