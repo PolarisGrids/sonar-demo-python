@@ -345,6 +345,30 @@ jobs:
               uniqueAssignees = [SECURITY_OWNER];
               console.log(`No assignees resolved — falling back to @${SECURITY_OWNER}`);
             }
+
+            // Validate each assignee is actually a collaborator on this repo
+            // GitHub rejects the entire issue create/update if even one assignee is invalid
+            const validAssignees = [];
+            for (const login of uniqueAssignees) {
+              try {
+                await github.rest.repos.checkCollaborator({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  username: login
+                });
+                validAssignees.push(login);
+              } catch (e) {
+                console.log(`@${login} is not a collaborator on this repo — skipping assignee`);
+              }
+            }
+            uniqueAssignees = validAssignees;
+
+            // Final fallback — if no valid collaborators found, assign to security owner
+            if (uniqueAssignees.length === 0 && SECURITY_OWNER) {
+              uniqueAssignees = [SECURITY_OWNER];
+              console.log(`No valid collaborators found — assigning to security owner @${SECURITY_OWNER}`);
+            }
+
             const assigneeText = uniqueAssignees.length > 0
               ? uniqueAssignees.map(a => `@${a}`).join(', ')
               : 'Could not auto-resolve — please assign manually';
@@ -360,7 +384,7 @@ jobs:
             const repoUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}`;
             const actionsUrl = `${repoUrl}/actions/workflows/gitleaks-history.yml`;
 
-            const body = `> 🔒 **This issue was automatically raised by the PolarisGrids Security Team** using [Gitleaks](https://github.com/gitleaks/gitleaks) secret scanning, deployed across all PolarisGrids repositories. This is **not** a GitHub notification. For queries, contact **syed.fahim@polarisgrids.com** or raise in the **#security** channel.\n\n` +
+            const body = `> 🔒 **PolarisGrids Secret Scanning** | This issue is raised automatically as part of the organisation's security posture.\n\n` +
                          `---\n\n` +
                          `## ${findings.length} Secret(s) Found in Git History\n\n` +
                          `**Last scan:** ${new Date().toISOString().split('T')[0]}\n` +
