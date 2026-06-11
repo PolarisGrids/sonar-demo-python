@@ -357,7 +357,12 @@ jobs:
               ? `\n> ⚠️ Showing ${TOP_N} of ${findings.length} findings. [Download full report from Actions artifact](${runUrl}) for the complete list.\n`
               : '';
 
-            const body = `## ${findings.length} Secret(s) Found in Git History\n\n` +
+            const repoUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}`;
+            const actionsUrl = `${repoUrl}/actions/workflows/gitleaks-history.yml`;
+
+            const body = `> 🔒 **This issue was automatically raised by the PolarisGrids Security Team** using [Gitleaks](https://github.com/gitleaks/gitleaks) secret scanning, deployed across all PolarisGrids repositories. This is **not** a GitHub notification. For queries, contact **syed.fahim@polarisgrids.com** or raise in the **#security** channel.\n\n` +
+                         `---\n\n` +
+                         `## ${findings.length} Secret(s) Found in Git History\n\n` +
                          `**Last scan:** ${new Date().toISOString().split('T')[0]}\n` +
                          `**Auto-assigned to:** ${assigneeText}\n\n` +
                          truncationNote +
@@ -366,7 +371,14 @@ jobs:
                          shown.map((f, i) =>
                            `| ${i+1} | ${f.RuleID} | ${f.File} | ${f.StartLine} | ${f.Commit?.substring(0,8)} | ${f.Author} | ${f.Date?.substring(0,10)} |`
                          ).join('\n') +
-                         `\n\n## Remediation Steps\n\n` +
+                         `\n\n## How to View Full Finding Details\n\n` +
+                         `The table above shows the top ${TOP_N} findings. To see masked secret values and the full list:\n\n` +
+                         `1. Go to the **Actions** tab of this repository\n` +
+                         `2. Click **[Gitleaks - Full History Scan](${actionsUrl})** in the left sidebar\n` +
+                         `3. Open the latest run\n` +
+                         `4. Expand the **Show history scan results** step — shows every finding with masked secret values, file paths, commit, and author\n` +
+                         `5. Download the **\`gitleaks-history-report\`** artifact at the bottom of the run page for the raw JSON\n\n` +
+                         `## Remediation Steps\n\n` +
                          `### Step 1 — Rotate the credential immediately\n` +
                          `Assume the secret is already compromised. Revoke or rotate it **before** doing anything else.\n` +
                          `Once rotated, the old value can no longer be used for access — history cleanup is a second priority.\n\n` +
@@ -403,9 +415,23 @@ jobs:
                          `client = boto3.client("secretsmanager", region_name="ap-south-1")\n` +
                          `secret = client.get_secret_value(SecretId="/gomati/stage/<service>/<secret-name>")\n` +
                          `\`\`\`\n\n` +
+                         `### Step 4 — If this is a false positive, suppress it with \`.gitleaksignore\`\n` +
+                         `If a finding is **not a real secret** (test data, config field names, DLMS/COSEM register IDs, placeholder values), suppress it so it never appears again:\n\n` +
+                         `1. From the findings table above, note the **Commit**, **File**, and **Line** columns\n` +
+                         `2. Build the fingerprint: \`<Commit>:<File>:<RuleID>:<Line>\`\n` +
+                         `   Example: \`a1b2c3d4:config/settings.py:generic-api-key:42\`\n` +
+                         `3. Add it to \`.gitleaksignore\` in the **root of this repository**:\n` +
+                         `\`\`\`bash\n` +
+                         `# .gitleaksignore — one fingerprint per line\n` +
+                         `# Format: <commit-sha>:<file-path>:<rule-id>:<line-number>\n` +
+                         `a1b2c3d4:config/settings.py:generic-api-key:42\n` +
+                         `\`\`\`\n` +
+                         `4. Commit and push \`.gitleaksignore\` — Gitleaks will skip this finding in all future scans\n` +
+                         `5. Notify **syed.fahim@polarisgrids.com** so it is also marked as **False Positive** in DefectDojo\n\n` +
+                         `> 💡 To ignore an **entire file** (e.g., test fixtures, backup CSVs), add a \`[allowlist]\` rule to \`.gitleaks.toml\` in the repo root instead.\n\n` +
                          `---\n` +
                          `📖 **Reference:** [Removing sensitive data from a repository — GitHub Docs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)\n\n` +
-                         `> ⚠️ This issue is auto-updated every Monday. A comment will be added each week until the history is clean.`;
+                         `> 🔒 Raised by **PolarisGrids Security Team** · Auto-updated every Monday · Issue closes automatically when history is clean`;
 
             // Check if issue already exists — update instead of creating duplicate
             const issues = await github.rest.issues.listForRepo({
@@ -429,12 +455,15 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issues.data[0].number,
-                body: `🔄 **Weekly scan update — ${new Date().toISOString().split('T')[0]}**\n\n` +
+                body: `> 🔒 **PolarisGrids Security Team** — weekly automated scan reminder\n\n` +
+                      `🔄 **Weekly scan update — ${new Date().toISOString().split('T')[0]}**\n\n` +
                       `${findings.length} secret(s) still found in git history.\n\n` +
-                      `${uniqueAssignees.map(a => `@${a}`).join(' ')} — this is a reminder to:\n` +
-                      `1. **Rotate** the exposed credential immediately\n` +
+                      `${uniqueAssignees.map(a => `@${a}`).join(' ')} — please action the following:\n\n` +
+                      `1. **Rotate** the exposed credential immediately (assume it is already compromised)\n` +
                       `2. **Purge** from git history using \`git-filter-repo --sensitive-data-removal\`\n` +
-                      `3. **Move** the secret to AWS Secrets Manager (\`/gomati/stage/<service>/<name>\`)\n\n` +
+                      `3. **Move** the secret to AWS Secrets Manager (\`/gomati/stage/<service>/<name>\`)\n` +
+                      `4. **False positive?** Add the fingerprint to \`.gitleaksignore\` and notify syed.fahim@polarisgrids.com\n\n` +
+                      `**To see masked secret values:** Actions tab → **Gitleaks - Full History Scan** → latest run → expand **Show history scan results**\n\n` +
                       `📖 [GitHub guide: Removing sensitive data from a repository](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)`
               });
               return;
